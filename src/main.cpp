@@ -82,21 +82,22 @@ int main() {
   MPC mpc;
 
   // int prev_psis_i = 0;
-  // const int LIMIT = 10;
-  // const double MIN_PSI_THRESHOLD = 0.1;
-  // const double MED_PSI_THRESHOLD = 0.6;
-  // double prev_psis[LIMIT];
+  const int LIMIT = 12;
+  int prev_psis_i = 0;
+  const double MIN_PSI_THRESHOLD = 0.1;
+  const double MED_PSI_THRESHOLD = 0.6;
+  double prev_psis[LIMIT] = {0.0};
 
   const double Lf = 2.67;
-  // const double MIN_COEFF_SUM_THRESHOLD = 1e-12;
+  const double MIN_COEFF_SUM_THRESHOLD = 1e-2;
 
-  // int prev_i = 0;
-  // double prev_coeff_sums[LIMIT] = {1.0};
+  int prev_i = 0;
+  double prev_coeff_sums[LIMIT] = {1.0};
 
-  const double latency_ms = 100;
+  const int latency_ms = 100;
   const double dt = 0.1;
 
-  h.onMessage([&mpc, &Lf, &latency_ms, &dt/*, &MIN_COEFF_SUM_THRESHOLD, &prev_coeff_sums, &prev_i, &LIMIT, &MIN_PSI_THRESHOLD, &MED_PSI_THRESHOLD*/](uWS::WebSocket<uWS::SERVER> ws, char *data, size_t length,
+  h.onMessage([&mpc, &Lf, &latency_ms, &dt/*, &MIN_COEFF_SUM_THRESHOLD, &prev_coeff_sums, &prev_psis, &prev_psis_i, &LIMIT, &MIN_PSI_THRESHOLD, &MED_PSI_THRESHOLD*/](uWS::WebSocket<uWS::SERVER> ws, char *data, size_t length,
                      uWS::OpCode opCode) {
     // "42" at the start of the message means there's a websocket message event.
     // The 4 signifies a websocket message
@@ -136,11 +137,11 @@ int main() {
           // prev_psis[++prev_psis_i % LIMIT] = psi;
 
           // Fit a third-degree polynomial to the way-points - this is the reference trajectory. 
-          // double average = fabs(average_psi(prev_psis, LIMIT));
+          // double average_psi = fabs(average(prev_psis, LIMIT));
           Eigen::VectorXd coeffs = polyfit_main(xvals, yvals, 3);
-          // if(average <= MIN_PSI_THRESHOLD)
+          // if(average_psi <= MIN_PSI_THRESHOLD)
           //   coeffs = polyfit_main(xvals, yvals, 1);
-          // else if(average <= MED_PSI_THRESHOLD) {
+          // else if(average_psi <= MED_PSI_THRESHOLD) {
           //   coeffs = polyfit_main(xvals, yvals, 2);
           // }
           // else
@@ -159,19 +160,23 @@ int main() {
           // Solve CTE at point x=0, since from the vehicle's perspective, we ARE 0,0
           double cte = polyeval_main(coeffs, 0);
 
-          double epsi;
-          if(coeffs.size() == 4) {  // third-order, a quadratic derivative (ax^3 + bx^2 + cx + d) => 3ax^2 + 2bx + c
-            epsi = -atan(coeffs[1] + 2 * coeffs[2] * px + 3 * coeffs[3] * (px * px));
-          }
-          else if(coeffs.size() == 3) {  // second-order, a linear derivative (ax^2 + bx + c) => 2ax + b
-            epsi = -atan(coeffs[1] + 2 * coeffs[2] * px);
-          }
-          else if(coeffs.size() == 2) {  // first-order, a constant derivative (ax + b) => a
-            epsi = -atan(coeffs[1]);
-          }
-          else {  // Not really sure what else you'd do in this case.
-            epsi = 0.0;
-          }
+          double epsi = -atan(coeffs[1]);
+
+          // Check if quadratic and cubic terms are sufficiently small, increase latency by 10%.
+          // prev_coeff_sums[prev_i % LIMIT] = fabs(coeffs[2]) + fabs(coeffs[3]);
+          // double average_coeff_sum = average(prev_coeff_sums, LIMIT);
+          // std::cout << "\n#######################\n" << average_coeff_sum << ", " << MIN_COEFF_SUM_THRESHOLD << "\n#######################\n";
+          // if(average_coeff_sum <= MIN_COEFF_SUM_THRESHOLD) {
+          //   std::cout << "\n#######################\n" << "Cool down" << "\n#######################\n";
+          //   dt = 0.15;
+          //   latency_ms = 150;
+          // }
+          // else {
+          //   std::cout << "\n#######################\n" << "Warm up" << "\n#######################\n";
+          //   dt = 0.1;
+          //   latency_ms = 100;
+          // }
+          // prev_i++;
 
           Eigen::VectorXd state(6);
 
@@ -179,14 +184,14 @@ int main() {
           // and act according on THAT information rather than what is the case right now.
           double delayed_state_x = v * dt;
           double delayed_state_y = 0.0;
-          double delayed_state_psi = 0.0 + (v / Lf) * delta * dt;
+          double delayed_state_psi = 0.0 - delta * (v / Lf) * dt;
           double delayed_state_v = v + acc * dt;
           double delayed_state_cte = cte + v * std::sin(epsi) * dt;
           double delayed_state_epsi = epsi - delta * (v / Lf) * dt;
 
           state << delayed_state_x, delayed_state_y, delayed_state_psi, delayed_state_v, delayed_state_cte, delayed_state_epsi;
 
-          std::vector<double> res = mpc.Solve(state, coeffs);
+          std::vector<double> res = mpc.Solve(state, coeffs, dt);
 
           double steer_value = res[0];
           double throttle_value = res[1];

@@ -92,7 +92,7 @@ class FG_eval {
     // NOTE: You'll probably go back and forth between this function and
     // the Solver function below.
 
-    fg[0] = 0.0;
+    fg[0] = 0;
 
     // Compute cost function...
     for(int t = 0; t < N; ++t) {
@@ -197,7 +197,8 @@ class FG_eval {
 MPC::MPC() {}
 MPC::~MPC() {}
 
-vector<double> MPC::Solve(Eigen::VectorXd state, Eigen::VectorXd coeffs) {
+vector<double> MPC::Solve(Eigen::VectorXd state, Eigen::VectorXd coeffs, double dt_new) {
+    dt = dt_new;
     bool ok = true;
     typedef CPPAD_TESTVECTOR(double) Dvector;
 
