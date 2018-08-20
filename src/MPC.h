@@ -10,6 +10,9 @@ class MPC {
  public:
   MPC();
 
+  const static int actuators_size = 2;
+  const static int state_size = 6;
+
   virtual ~MPC();
 
   // Solve the model given an initial state and polynomial coefficients.

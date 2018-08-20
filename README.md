@@ -1,6 +1,50 @@
 # CarND-Controls-MPC
 Self-Driving Car Engineer Nanodegree Program
 
+Hi there, and welcome to my final project for Term 2 of the Udacity Self-Driving Car Engineer Nanodegree.
+
+I'm apparently required to write up some parts of this project to show understanding of what I've done. What a crazy idea. 
+
+## Student describes their model in detail. This includes the state, actuators and update equations.
+
+Model Predictive Control (MPC) is a more advanced control algorithm than PID control. The reason is because we are now modelling the process and simulating this process over a given time horizon, enabling MPC to predict the future, which a PID controller cannot do.
+
+MPC requires several components. We read in the current state, acquired by our sensors (e.g. lidar, radar, stereo camera, odometry data). We define the model that models the process (in our case, how a vehicle's trajectory evolves over time using the bicycle model). We define the constraints on our actuators (basically, what our vehicle is physically capable of since we can't immediately turn 270&deg). We finally define a cost function that is to be minimised. It is this cost function that we tune to get better performance and specify desired behaviour, since the cost function may reward or punish certain behaviours, like rewarding harder acceleration out of corners, or punishing abrupt lane changes.
+
+The solver that is used by MPC takes in this initial state, the model, constraints, and cost function to produce a vector of (constrained) actuations that minimises our cost function. Note that this is often a _locally_ optimal solution! We then execute the first actuations, and discard the rest of the vector. Although wasteful, this is important and necessary since a) our model is only approximate, b) there is a degree of motion noise that our solver doesn't necessarily take into account and c) the external environment may dynamically influence our trajectory (for instance, a car overtaking us likely implies we should maintain or decrease our speed). 
+
+The actual model is defined by specifying how a variable (such as our position in x-y coordinates) is constrained by the previous timestep. This has a Markovian feel, since we are only basing our prediction of the variable at a given timestep based on the timestep immediately prior, independently of other timesteps. This simplifies the logic of the model, as well as reducing memory requirements (both good things). 
+
+## Student discusses the reasoning behind the chosen N (timestep length) and dt (elapsed duration between timesteps) values. Additionally the student details the previous values tried.
+
+_N_ and _dt_ are important because they determine the time horizon over which we simulate the trajectory and minimise the cost function. If _N_ is large and _dt_ is small, we have a longer time horizon to take account of and our motion is more granular, as we take many steps due to _dt_. This is better for accuracy, but more computationally intensive and potentially longer to get a good result for. The converse is true if _N_ is small and _dt_ is large.
+
+My reasoning was that we don't need to predict much beyond around a second. This has the added benefit of shortening the trajecory, so computation-wise it is not too bad. A bigger reason for this was because a longer trajectory also increases the likelihood of getting some seriously weird outputs - even the Udacity example (the GIF shown to us to demonstrate the final result) has a couple of timesteps where the planned trajectory goes off with a mind of its own. This reflects the "local" in the "locally optimal" solution that our solver (provided by the IPOPT package) provides. By shortening the time horizon to evaluate, our trajectory becomes increasingly linear and so we have less variability in the result. I decided that _dt_ should just be the same as the latency we have to deal with, being 0.1 seconds, or 100 milliseconds. This seemed to work well, although whether _dt_ for the solver is better the closer it is to our actual latency is something I'm unaware of.
+
+At any rate, these two parameters worked out quite well, and it was mainly a question of tuning the cost function from there onwards.
+
+## A polynomial is fitted to waypoints. If the student preprocesses waypoints, the vehicle state, and/or actuators prior to the MPC procedure it is described.
+
+The waypoints are converted to the vehicle's own coordinate system, since they are initially in the global coordinate system. This meant that I couldn't even spot the damn waypoints when I first tried rendering them! After going on the internet to check this, the penny dropped and I converted them using the homogenous transform. This simplified the rest of the code, which was handy. 
+
+## The student implements Model Predictive Control that handles a 100 millisecond latency. Student provides details on how they deal with latency.
+
+The latency (which is set as a parameter) is also used to update the initial state before passing it to the solver. The reason why I do this is because by the time the solver actually solves for the optimal trajectory and returns the requisite actuations, the lag for these actuations to propogate through the system means they are slightly behind. So I simply adjust the initial state to account for the latency, so that when the actuations are executed they are done so at greater accuracy to the actual state.
+
+As the below video shows, the vehicle shifts along in a far smoother fashion to its PID-controlled sibling, albeit I think(?) at a slightly slower pace. It drives much more consistently, which is good. No doubt the increase in the complexity of the model allows it to have more fine-tuned control over the vehicle's behaviour in different situations. 
+
+[Final controller no simplifying](./final_controller_no_simplifying.mov "Final controller, no simplifying")
+
+## And...
+
+Yes, I tried optimising a little further. Although the MPC controller delivers a better all-round performance, you would damn hope so considering it has to muck around with some considerably more intensive solving. The PID controller is laughably simple in comparison and over the course of a drive I suspect would have massively lower power consumption. In certain scenarios, particularly when travelling in a fairly steady-state fashion along a highway, one might reasonably ask whether this additional complexity and number-crunching is really necessary. 
+
+For those reasons, I decided to try simplifying the controller, particularly along the straight(er) bits. The track is probably not the best place to do this since only the bridge is truly straight, and is immediately followed by a fairly tight corner. I initially tried to reduce the order of the polynomial to pass to the solver (which by default is a third-order polynomial) if the average steering angle was sufficiently close to 0. This does not work particularly well, as the below video shows.
+
+[Linearising the waypoints](./linearising_waypoints.mov "Linearising the waypoints")
+
+I instead decided to try increasing the latency if the current steering angle was sufficiently small. This would also feed into the update of the initial state, so there wouldn't be any disconnect between the two.
+
 ---
 
 ## Dependencies
@@ -70,39 +114,3 @@ More information is only accessible by people who are already enrolled in Term 2
 of CarND. If you are enrolled, see [the project page](https://classroom.udacity.com/nanodegrees/nd013/parts/40f38239-66b6-46ec-ae68-03afd8a601c8/modules/f1820894-8322-4bb3-81aa-b26b3c6dcbaf/lessons/b1ff3be0-c904-438e-aad3-2b5379f0e0c3/concepts/1a2255a0-e23c-44cf-8d41-39b8a3c8264a)
 for instructions and the project rubric.
 
-## Hints!
-
-* You don't have to follow this directory structure, but if you do, your work
-  will span all of the .cpp files here. Keep an eye out for TODOs.
-
-## Call for IDE Profiles Pull Requests
-
-Help your fellow students!
-
-We decided to create Makefiles with cmake to keep this project as platform
-agnostic as possible. Similarly, we omitted IDE profiles in order to we ensure
-that students don't feel pressured to use one IDE or another.
-
-However! I'd love to help people get up and running with their IDEs of choice.
-If you've created a profile for an IDE that you think other students would
-appreciate, we'd love to have you add the requisite profile files and
-instructions to ide_profiles/. For example if you wanted to add a VS Code
-profile, you'd add:
-
-* /ide_profiles/vscode/.vscode
-* /ide_profiles/vscode/README.md
-
-The README should explain what the profile does, how to take advantage of it,
-and how to install it.
-
-Frankly, I've never been involved in a project with multiple IDE profiles
-before. I believe the best way to handle this would be to keep them out of the
-repo root to avoid clutter. My expectation is that most profiles will include
-instructions to copy files to a new location to get picked up by the IDE, but
-that's just a guess.
-
-One last note here: regardless of the IDE used, every submitted project must
-still be compilable with cmake and make./
-
-## How to write a README
-A well written README file can enhance your project and portfolio.  Develop your abilities to create professional README files by completing [this free course](https://www.udacity.com/course/writing-readmes--ud777).

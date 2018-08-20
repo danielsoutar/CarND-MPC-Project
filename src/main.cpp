@@ -2,6 +2,7 @@
 #include <uWS/uWS.h>
 #include <chrono>
 #include <iostream>
+#include <fstream>
 #include <thread>
 #include <vector>
 #include "Eigen-3.3/Eigen/Core"
@@ -33,7 +34,7 @@ string hasData(string s) {
 }
 
 // Evaluate a polynomial.
-double polyeval(Eigen::VectorXd coeffs, double x) {
+double polyeval_main(Eigen::VectorXd coeffs, double x) {
   double result = 0.0;
   for (int i = 0; i < coeffs.size(); i++) {
     result += coeffs[i] * pow(x, i);
@@ -41,10 +42,19 @@ double polyeval(Eigen::VectorXd coeffs, double x) {
   return result;
 }
 
+double average(double arr[], int LIMIT) {
+    double average = 0.0;
+    for (int i = 0; i < LIMIT; ++i) {
+        average += arr[i];
+    }
+    average /= LIMIT;
+    return average;
+}
+
 // Fit a polynomial.
 // Adapted from
 // https://github.com/JuliaMath/Polynomials.jl/blob/master/src/Polynomials.jl#L676-L716
-Eigen::VectorXd polyfit(Eigen::VectorXd xvals, Eigen::VectorXd yvals,
+Eigen::VectorXd polyfit_main(Eigen::VectorXd xvals, Eigen::VectorXd yvals,
                         int order) {
   assert(xvals.size() == yvals.size());
   assert(order >= 1 && order <= xvals.size() - 1);
@@ -71,7 +81,22 @@ int main() {
   // MPC is initialized here!
   MPC mpc;
 
-  h.onMessage([&mpc](uWS::WebSocket<uWS::SERVER> ws, char *data, size_t length,
+  // int prev_psis_i = 0;
+  // const int LIMIT = 10;
+  // const double MIN_PSI_THRESHOLD = 0.1;
+  // const double MED_PSI_THRESHOLD = 0.6;
+  // double prev_psis[LIMIT];
+
+  const double Lf = 2.67;
+  // const double MIN_COEFF_SUM_THRESHOLD = 1e-12;
+
+  // int prev_i = 0;
+  // double prev_coeff_sums[LIMIT] = {1.0};
+
+  const double latency_ms = 100;
+  const double dt = 0.1;
+
+  h.onMessage([&mpc, &Lf, &latency_ms, &dt/*, &MIN_COEFF_SUM_THRESHOLD, &prev_coeff_sums, &prev_i, &LIMIT, &MIN_PSI_THRESHOLD, &MED_PSI_THRESHOLD*/](uWS::WebSocket<uWS::SERVER> ws, char *data, size_t length,
                      uWS::OpCode opCode) {
     // "42" at the start of the message means there's a websocket message event.
     // The 4 signifies a websocket message
@@ -91,28 +116,98 @@ int main() {
           double py = j[1]["y"];
           double psi = j[1]["psi"];
           double v = j[1]["speed"];
+          double delta = j[1]["steering_angle"];
+          double acc = j[1]["throttle"];
 
-          /*
-          * TODO: Calculate steering angle and throttle using MPC.
-          *
-          * Both are in between [-1, 1].
-          *
-          */
-          double steer_value;
-          double throttle_value;
+          // Could maybe try choosing the order based on size of psi.
+          // If psi small, on a straight. Can get away with evaluating
+          // using a straight line with minimal loss of accuracy.
+          // If psi large, in a corner. Evaluate using higher order.
+          Eigen::VectorXd xvals(ptsx.size());
+          Eigen::VectorXd yvals(ptsy.size());
+
+          // Convert incoming way-points to vehicle's coordinate system.
+          // First subtract px and py off of them, and then apply the transform.
+          for (int i = 0; i < ptsx.size(); ++i) {
+            xvals[i] = (ptsx[i] - px) * std::cos(-psi) - (ptsy[i] - py) * std::sin(-psi);
+            yvals[i] = (ptsx[i] - px) * std::sin(-psi) + (ptsy[i] - py) * std::cos(-psi);
+          }
+
+          // prev_psis[++prev_psis_i % LIMIT] = psi;
+
+          // Fit a third-degree polynomial to the way-points - this is the reference trajectory. 
+          // double average = fabs(average_psi(prev_psis, LIMIT));
+          Eigen::VectorXd coeffs = polyfit_main(xvals, yvals, 3);
+          // if(average <= MIN_PSI_THRESHOLD)
+          //   coeffs = polyfit_main(xvals, yvals, 1);
+          // else if(average <= MED_PSI_THRESHOLD) {
+          //   coeffs = polyfit_main(xvals, yvals, 2);
+          // }
+          // else
+          //   coeffs = polyfit_main(xvals, yvals, 3);
+
+          // for (int i = 0; i < coeffs.size(); ++i) {
+          //     std::cout << coeffs[i] << ", ";
+          // }
+          // std::cout << "\nPREV_PSIS:\n";
+
+          // for (int i = 0; i < LIMIT; ++i) {
+          //     std::cout << prev_psis[i] << ", ";
+          // }
+          // std::cout << "\nAverage: " << average << "\n";
+
+          // Solve CTE at point x=0, since from the vehicle's perspective, we ARE 0,0
+          double cte = polyeval_main(coeffs, 0);
+
+          double epsi;
+          if(coeffs.size() == 4) {  // third-order, a quadratic derivative (ax^3 + bx^2 + cx + d) => 3ax^2 + 2bx + c
+            epsi = -atan(coeffs[1] + 2 * coeffs[2] * px + 3 * coeffs[3] * (px * px));
+          }
+          else if(coeffs.size() == 3) {  // second-order, a linear derivative (ax^2 + bx + c) => 2ax + b
+            epsi = -atan(coeffs[1] + 2 * coeffs[2] * px);
+          }
+          else if(coeffs.size() == 2) {  // first-order, a constant derivative (ax + b) => a
+            epsi = -atan(coeffs[1]);
+          }
+          else {  // Not really sure what else you'd do in this case.
+            epsi = 0.0;
+          }
+
+          Eigen::VectorXd state(6);
+
+          // Accounts for the latency - use the model to predict where we will be in 100ms...
+          // and act according on THAT information rather than what is the case right now.
+          double delayed_state_x = v * dt;
+          double delayed_state_y = 0.0;
+          double delayed_state_psi = 0.0 + (v / Lf) * delta * dt;
+          double delayed_state_v = v + acc * dt;
+          double delayed_state_cte = cte + v * std::sin(epsi) * dt;
+          double delayed_state_epsi = epsi - delta * (v / Lf) * dt;
+
+          state << delayed_state_x, delayed_state_y, delayed_state_psi, delayed_state_v, delayed_state_cte, delayed_state_epsi;
+
+          std::vector<double> res = mpc.Solve(state, coeffs);
+
+          double steer_value = res[0];
+          double throttle_value = res[1];
 
           json msgJson;
-          // NOTE: Remember to divide by deg2rad(25) before you send the steering value back.
-          // Otherwise the values will be in between [-deg2rad(25), deg2rad(25] instead of [-1, 1].
-          msgJson["steering_angle"] = steer_value;
+          // Divide by deg2rad(25) before sending the steering value back to ensure correct range.
+          // Including Lf accounts for actual turn radius.
+          msgJson["steering_angle"] = steer_value / (deg2rad(25) * Lf);
           msgJson["throttle"] = throttle_value;
 
           //Display the MPC predicted trajectory 
-          vector<double> mpc_x_vals;
-          vector<double> mpc_y_vals;
+          vector<double> mpc_x_vals = {state[0]};
+          vector<double> mpc_y_vals = {state[1]};
 
           //.. add (x,y) points to list here, points are in reference to the vehicle's coordinate system
-          // the points in the simulator are connected by a Green line
+          // the points in the simulator are connected by a green line
+
+          for(int i = 2; i < res.size(); i += 4) {
+            mpc_x_vals.push_back(res[i]);
+            mpc_y_vals.push_back(res[i + 1]);
+          }
 
           msgJson["mpc_x"] = mpc_x_vals;
           msgJson["mpc_y"] = mpc_y_vals;
@@ -120,6 +215,14 @@ int main() {
           //Display the waypoints/reference line
           vector<double> next_x_vals;
           vector<double> next_y_vals;
+
+          double step = 3;
+          int num_points = 30;
+          
+          for (int i = 1; i < num_points; ++i) {
+            next_x_vals.push_back(step * i);
+            next_y_vals.push_back(polyeval_main(coeffs, step * i));
+          }
 
           //.. add (x,y) points to list here, points are in reference to the vehicle's coordinate system
           // the points in the simulator are connected by a Yellow line
@@ -129,17 +232,17 @@ int main() {
 
 
           auto msg = "42[\"steer\"," + msgJson.dump() + "]";
-          std::cout << msg << std::endl;
+          // std::cout << msg << std::endl;
           // Latency
           // The purpose is to mimic real driving conditions where
-          // the car does actuate the commands instantly.
+          // the car does not actuate the commands instantly.
           //
           // Feel free to play around with this value but should be to drive
           // around the track with 100ms latency.
           //
           // NOTE: REMEMBER TO SET THIS TO 100 MILLISECONDS BEFORE
           // SUBMITTING.
-          this_thread::sleep_for(chrono::milliseconds(100));
+          this_thread::sleep_for(chrono::milliseconds(latency_ms));
           ws.send(msg.data(), msg.length(), uWS::OpCode::TEXT);
         }
       } else {
